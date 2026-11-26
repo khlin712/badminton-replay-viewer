@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>羽球 3D 回放對照</title>
+<link rel="stylesheet" href="player.css">
+<script type="importmap">{"imports":{"three":"./vendor/three/three.module.min.js","three/addons/controls/OrbitControls.js":"./vendor/three/OrbitControls.js"}}</script>
+</head>
+<body>
+<div id="sitebanner"><span></span><button id="bannerx">×</button></div>
+<div id="landing"><div class="box">
+  <h1>羽球 3D 回放對照</h1>
+  <p>把場館給你的 <b>3D 檔（.badm3d）</b>，和你拿到的<b>原始影片</b>放在一起：左邊 3D、右邊影片同步播放，3D 可以用手拖曳、縮放，從任何角度看整個球場，也能疊回影片上。<br><b>檔案只在你自己的裝置上讀取，不會上傳到任何地方。</b>這個網站只負責播放，沒有分析功能。</p>
+  <div class="card" id="c1"><b>① 3D 檔（.badm3d）</b><button id="pickdata">選擇檔案</button><input id="filedata" type="file" accept=".badm3d,.gz,application/gzip" hidden><div id="dstatus" class="mute"></div></div>
+  <div class="card" id="c2"><b>② 原始影片（選填）</b><button id="pickvideo">選擇影片</button><input id="filevideo" type="file" accept="video/*,.mov,.mp4,.m4v,.webm" hidden><div id="vname" class="mute"></div><div id="vstatus" class="mute"></div></div>
+  <button id="gobtn" disabled>先選 3D 檔</button>
+  <small>影片必須是<b>製作 3D 檔時用的同一支檔案</b>（不是另外拍的）。也可以直接把兩個檔案拖進這個視窗。</small>
+</div></div>
+<div id="main">
+  <div class="pane" id="p3d">
+    <canvas id="scene"></canvas>
+    <div class="title"><b id="ttl"></b><small id="viewname"></small></div>
+    <div id="legend"></div>
+  </div>
+  <div class="pane" id="pvid"><video id="vid" muted playsinline preload="auto"></video></div>
+</div>
+<div id="tacpanel" style="display:none"><div class="phead"><b>落點分布</b><button id="tacclose">×</button></div><div id="tacbody"><div id="tacinfo"></div><div id="zonegrid"></div></div></div>
+<div id="hitpanel" style="display:none"><div class="phead"><b>擊球</b><span id="hpstate"></span><button id="hpclose">×</button></div><div id="hpbody"><div id="hitsum"></div><div id="hitlist"><table id="hittbl"></table></div></div></div>
+<div id="bar">
+  <div class="brow" id="row1">
+    <button id="play">▶ 播放</button><button id="prev">‹ 格</button><button id="next">格 ›</button>
+    <div id="seekw"><input id="seek" type="range" min="0" max="1000" value="0"><canvas id="hitbar"></canvas></div>
+    <span id="time">0.00 s</span>
+    <div class="g"><span>速度</span><button data-r="0.25">¼×</button><button data-r="0.5">½×</button><button data-r="1" class="on">1×</button></div>
+  </div>
+  <div class="brow" id="row2">
+    <div class="g"><span>視角</span><select id="viewsel"><option value="orbit">環繞</option><option value="campos">攝影機位</option><option value="cam">原機位疊合</option><option value="top">俯視</option><option value="back">底線後方</option><option value="side">側面</option></select></div>
+    <button id="trailbtn" class="on">軌跡</button><button id="ballbtn" class="on">羽球</button><button id="racketbtn" class="on">球拍</button>
+    <button id="hitsbtn">擊球清單</button><button id="tacbtn">落點</button><button id="resetbtn">換檔案</button>
+  </div>
+</div>
+<script type="module" src="player.js"></script>
+</body>
+</html>
