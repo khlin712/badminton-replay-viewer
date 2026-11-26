@@ -13,6 +13,7 @@ body.novideo #pvid{display:none}body.novideo #main{grid-template-columns:1fr}
 #bar{display:flex;flex-direction:column;gap:6px;padding:8px 10px;background:var(--panel);border-top:1px solid var(--line)}
 #bar .brow{display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0}
 button,select{background:#23232f;color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:5px 10px;font:inherit;cursor:pointer}
+button.hot{background:#2a2410;color:var(--acc);border-color:var(--acc);font-weight:600}
 button.on{background:var(--acc);color:#111;border-color:var(--acc);font-weight:600}
 .g{display:flex;gap:4px;align-items:center}.g span{color:var(--mute);margin-right:2px}
 #seekw{flex:1 1 220px;min-width:140px;position:relative;display:flex}#seek{flex:1;min-width:0;accent-color:var(--acc)}

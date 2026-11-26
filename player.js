@@ -13,7 +13,7 @@ const mbs = n => (n / 1e6).toFixed(n < 1e7 ? 1 : 0) + ' MB';
 
 /* ---------- state ---------- */
 let S = null, videoFile = null, blobUrl = null, started = false, vidCheck = null;
-let view = 'orbit', showTrail = true, showBall = true, showRacket = true, hasVideo = false;
+let view = 'orbit', showTrail = true, showBall = true, showRacket = false, hasVideo = false;   // racket: an estimate from the forearm, off unless asked for
 const vid = $('vid');
 
 /* ---------- three.js scene ---------- */
@@ -54,6 +54,22 @@ function floorText(text, size = 0.32, opacity = 0.32) {
   const m = new THREE.Mesh(new THREE.PlaneGeometry(size * c.width / c.height, size), new THREE.MeshBasicMaterial({map: new THREE.CanvasTexture(c), transparent: true, opacity, depthWrite: false})); m.renderOrder = 1; return m;
 }
 const ends = [floorText('近場'), floorText('遠場')]; ends[0].position.set(CW / 2, -0.5, 0.02); ends[1].position.set(CW / 2, CL + 0.75, 0.02); ends.forEach(e => scene.add(e));
+// where the video camera stood and which way it looked: two white chevrons on the floor just behind the near baseline + 「攝影機」
+// (same marker as the analysis tool; from the camera saved in the 3D file)
+const camGizmo = new THREE.Group(); scene.add(camGizmo);
+function buildCamGizmo(c) {
+  camGizmo.clear(); if (!c || !c.pos || !c.quat) return;
+  const pos = new THREE.Vector3().fromArray(c.pos), dir = new THREE.Vector3(0, 0, -1).applyQuaternion(new THREE.Quaternion().fromArray(c.quat));
+  dir.z = 0; if (dir.lengthSq() < 1e-6) dir.set(0, 1, 0); dir.normalize();
+  const bx = Math.min(Math.max(pos.x, -1), CW + 1), by = Math.max(pos.y, -1.6);
+  const g = new THREE.Group(); g.position.set(bx, by, 0.02); g.rotation.z = Math.atan2(dir.y, dir.x);
+  const mat = new THREE.MeshBasicMaterial({color: 0xffffff, transparent: true, opacity: 0.8, side: THREE.DoubleSide, depthWrite: false});
+  const chev = x => { const sh = new THREE.Shape(); sh.moveTo(x - 0.28, -0.5); sh.lineTo(x + 0.22, 0); sh.lineTo(x - 0.28, 0.5);
+    sh.lineTo(x - 0.46, 0.5); sh.lineTo(x + 0.04, 0); sh.lineTo(x - 0.46, -0.5); sh.closePath(); return sh; };
+  [0.3, -0.25].forEach(x => g.add(new THREE.Mesh(new THREE.ShapeGeometry(chev(x)), mat)));
+  camGizmo.add(g);
+  const tag = floorText('攝影機', 0.3, 0.6); tag.position.set(bx - dir.x * 0.85, by - dir.y * 0.85, 0.02); camGizmo.add(tag);
+}
 
 /* ---------- player figures (drawn from the file's joint positions) ---------- */
 const UP = new THREE.Vector3(0, 1, 0);
@@ -190,7 +206,7 @@ function layout() {
 }
 function setView(v) {
   view = v; $('viewname').textContent = VIEWS[v]; if ($('viewsel').value !== v) $('viewsel').value = v;
-  const overlay = v === 'cam' && hasVideo; floor.visible = courtMesh.visible = net.visible = !overlay; ends.forEach(e => e.visible = !overlay); controls.enabled = !overlay; document.body.classList.toggle('camview', overlay);
+  const overlay = v === 'cam' && hasVideo; floor.visible = courtMesh.visible = net.visible = !overlay; ends.forEach(e => e.visible = !overlay); camGizmo.visible = !overlay; controls.enabled = !overlay; document.body.classList.toggle('camview', overlay);
   if (!overlay) {
     camera.up.set(0, 0, 1); camera.fov = 40;
     const tgt = new THREE.Vector3(CW / 2, NETY, 0.8), pos = {orbit: [CW / 2 + 6, -5, 8], top: [CW / 2, NETY - 0.5, 22], back: [CW / 2, -6.5, 3.2], side: [-10, NETY, 3.5]}[v];
@@ -245,6 +261,8 @@ async function checkVideo() {
   else if (vidCheck.ok === false) { el.className = 'warn'; el.textContent = '⚠ ' + vidCheck.msg; }
   else { el.className = 'mute'; el.textContent = '大小相同（這個連線無法做進一步比對）'; }
   refreshButtons();
+  // added from the player (after start): tell the result on the player screen too
+  if (started && hasVideo) banner(vidCheck.ok === false ? '提醒：' + vidCheck.msg : vidCheck.ok === true ? '✓ 確認是製作這個 3D 檔用的同一支影片' : '');
 }
 async function setData(file) {
   const el = $('dstatus'); el.className = 'mute'; el.textContent = '讀取中…';
@@ -279,8 +297,14 @@ function start() {
   if (!hasVideo) document.querySelector('#viewsel option[value="cam"]').remove();
   $('ttl').textContent = S.title; document.title = S.title + '｜羽球 3D 回放對照';
   rigs.forEach(r => { scene.remove(r.g); scene.remove(r.trail); }); rigs = S.slots.map(s => makeRig(s.col));
-  buildPanels(); $('landing').style.display = 'none';
-  if (hasVideo) {
+  buildPanels(); buildCamGizmo(S.cam); $('landing').style.display = 'none';
+  if (hasVideo) attachVideo();
+  fitBar(); layout(); drawTicks(); setView('orbit'); lastHit = -2;
+  refreshAddVid();
+}
+// the original video beside the 3D: at the start, or added later from the player (＋ 加入影片) without reloading
+function attachVideo() {
+  {
     vid.addEventListener('loadedmetadata', () => {
       let msg = ''; if (Math.abs(vid.duration - S.duration) > 0.5) msg = `影片長度（${vid.duration.toFixed(1)} 秒）和 3D 檔（${S.duration.toFixed(1)} 秒）不同，3D 和畫面可能對不上。`;
       else if (S.videoFingerprint && S.videoFingerprint.width && (vid.videoWidth !== S.videoFingerprint.width || vid.videoHeight !== S.videoFingerprint.height)) msg = '影片解析度和分析用的影片不同，疊合位置可能不準。';
@@ -289,14 +313,26 @@ function start() {
     vid.addEventListener('error', () => banner('這個瀏覽器無法播放這支影片的格式（iPhone 錄的 HEVC .mov 請改用 Safari，或用 Mac／iPhone 開啟）。3D 仍可使用。'));
     vid.src = blobUrl;
   }
-  fitBar(); layout(); drawTicks(); setView('orbit'); lastHit = -2;
+}
+function refreshAddVid() { const b = $('addvidbtn'); b.textContent = hasVideo ? '換影片' : '＋ 加入原始影片'; b.classList.toggle('hot', !hasVideo); }
+function addVideoLater(file) {
+  const t = clock.t; clock.pause(); $('play').textContent = '▶ 播放';
+  setVideo(file);
+  if (!hasVideo) {
+    hasVideo = true; document.body.classList.remove('novideo');
+    const sel = $('viewsel'); if (!sel.querySelector('option[value="cam"]')) { const o = document.createElement('option'); o.value = 'cam'; o.textContent = '原機位疊合'; sel.insertBefore(o, sel.options[2] || null); }
+    attachVideo();
+  }
+  vid.addEventListener('loadedmetadata', () => { vid.currentTime = Math.min(t, vid.duration || t); vid.playbackRate = clk.rate || 1; layout(); }, {once: true});
+  refreshAddVid(); fitBar(); layout();
 }
 
 $('pickdata').onclick = () => $('filedata').click(); $('pickvideo').onclick = () => $('filevideo').click();
-$('filedata').onchange = e => { if (e.target.files[0]) setData(e.target.files[0]); }; $('filevideo').onchange = e => { if (e.target.files[0]) setVideo(e.target.files[0]); };
+$('filedata').onchange = e => { if (e.target.files[0]) setData(e.target.files[0]); }; $('filevideo').onchange = e => { const f = e.target.files[0]; e.target.value = ''; if (!f) return; if (started) addVideoLater(f); else setVideo(f); };
+$('addvidbtn').onclick = () => $('filevideo').click();
 $('gobtn').onclick = start; $('resetbtn').onclick = () => location.reload(); $('bannerx').onclick = () => banner('');
 ['dragover', 'drop'].forEach(ev => addEventListener(ev, e => { e.preventDefault(); if (ev !== 'drop') return;
-  for (const f of e.dataTransfer.files) { if (/\.(badm3d|gz)$/i.test(f.name)) setData(f); else if (/^video\//.test(f.type) || /\.(mov|mp4|m4v|webm)$/i.test(f.name)) setVideo(f); } }));
+  for (const f of e.dataTransfer.files) { if (/\.(badm3d|gz)$/i.test(f.name)) setData(f); else if (/^video\//.test(f.type) || /\.(mov|mp4|m4v|webm)$/i.test(f.name)) (started ? addVideoLater : setVideo)(f); } }));
 $('play').onclick = () => { if (clock.playing) { clock.pause(); $('play').textContent = '▶ 播放'; } else { clock.play(); $('play').textContent = '❚❚ 暫停'; } };
 const step = () => 1 / (S.fps || 30);
 $('prev').onclick = () => { clock.pause(); $('play').textContent = '▶ 播放'; clock.t = clock.t - step(); }; $('next').onclick = () => { clock.pause(); $('play').textContent = '▶ 播放'; clock.t = clock.t + step(); };
