@@ -230,6 +230,8 @@ const clock = {
 };
 
 /* ---------- loading the file, picking the video, checking it is the same one ---------- */
+// which analysis mode the 3D file was made with (older files: not recorded)
+const modeName = b => b.analysis === 'fast' ? '快速分析' : b.analysis === 'precise' ? '精確分析' : '分析模式未標示';
 async function readFile3d(file) {
   const buf = new Uint8Array(await file.arrayBuffer()); let text;
   if (buf[0] === 0x1f && buf[1] === 0x8b) {
@@ -266,7 +268,7 @@ async function checkVideo() {
 }
 async function setData(file) {
   const el = $('dstatus'); el.className = 'mute'; el.textContent = '讀取中…';
-  try { S = await readFile3d(file); el.className = 'ok'; el.textContent = `✓ ${S.title}（${S.duration.toFixed(1)} 秒，${mbs(file.size)}）`; }
+  try { S = await readFile3d(file); el.className = 'ok'; el.textContent = `✓ ${S.title}（${modeName(S)}・${S.duration.toFixed(1)} 秒，${mbs(file.size)}）`; }
   catch (e) { S = null; el.className = 'warn'; el.textContent = '⚠ ' + (e.message || e); }
   refreshButtons(); checkVideo();
 }
@@ -295,7 +297,7 @@ function start() {
   if (!S || started) return; started = true; hasVideo = !!videoFile;
   document.body.classList.toggle('novideo', !hasVideo);
   if (!hasVideo) document.querySelector('#viewsel option[value="cam"]').remove();
-  $('ttl').textContent = S.title; document.title = S.title + '｜羽球 3D 回放對照';
+  $('ttl').textContent = S.title; $('modetag').textContent = modeName(S); $('modetag').className = 'modetag ' + (S.analysis || 'none'); document.title = S.title + '｜羽球 3D 回放對照';
   rigs.forEach(r => { scene.remove(r.g); scene.remove(r.trail); }); rigs = S.slots.map(s => makeRig(s.col));
   buildPanels(); buildCamGizmo(S.cam); $('landing').style.display = 'none';
   if (hasVideo) attachVideo();
