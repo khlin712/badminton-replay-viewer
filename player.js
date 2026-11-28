@@ -74,6 +74,77 @@ function buildCamGizmo(c) {
 /* ---------- player figures (drawn from the file's joint positions) ---------- */
 const UP = new THREE.Vector3(0, 1, 0);
 function setBone(m, a, b, r) { const d = new THREE.Vector3().subVectors(b, a), len = d.length(); m.position.copy(a).addScaledVector(d, .5); m.scale.set(r, len, r); m.quaternion.setFromUnitVectors(UP, d.normalize()); }
+/* ---------- figure styles: how a player's body is drawn from the file's joint positions (look only) ---------- */
+const FIG_STYLES = [['capsule', '膠囊人'], ['glass', '半透明＋骨架'], ['thin', '細骨架'], ['athlete', '運動員'], ['smooth', '平滑一體']];
+let figStyle = (() => { let v = null; try { v = localStorage.getItem('figStyle'); } catch (e) {} return FIG_STYLES.some(f => f[0] === v) ? v : 'capsule'; })();
+const FIG_ARMS = [[11, 13, 15], [12, 14, 16]], FIG_LEGS = [[23, 25, 27, 29, 31], [24, 26, 28, 30, 32]];
+function figFrame(tmp) {                     // torso frame: x = right (left→right shoulder/hip), y = front, z = up the spine
+  const sh = tmp[11].clone().add(tmp[12]).multiplyScalar(.5), hp = tmp[23].clone().add(tmp[24]).multiplyScalar(.5);
+  const z = sh.clone().sub(hp); const len = z.length() || 1e-3; z.divideScalar(len);
+  const x = tmp[12].clone().sub(tmp[11]).add(tmp[24].clone().sub(tmp[23])); x.addScaledVector(z, -x.dot(z));
+  if (x.lengthSq() < 1e-8) x.set(1, 0, 0); x.normalize();
+  const y = new THREE.Vector3().crossVectors(z, x), q = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(x, y, z));
+  const head = tmp[7].clone().add(tmp[8]).multiplyScalar(.5).add(new THREE.Vector3(0, 0, 0.02));
+  // widths never below body proportions: side-on to the camera both shoulders (and hips) land on one point and the body
+  // was drawn paper-thin (shoulders ≥ 0.7 × torso length, hips ≥ 0.36 ×)
+  return {sh, hp, x, y, z, q, len, sw: Math.max(tmp[11].distanceTo(tmp[12]), 0.7 * len), hw: Math.max(tmp[23].distanceTo(tmp[24]), 0.36 * len), head};
+}
+function buildFigure(rig, col) {
+  if (rig.fig) { rig.fig.group.traverse(o => { if (o.isMesh) { o.geometry.dispose(); o.material.dispose(); } }); rig.g.remove(rig.fig.group); }
+  const group = new THREE.Group(), parts = [], base = new THREE.Color(col);
+  const M = (o = {}) => new THREE.MeshStandardMaterial(Object.assign({color: base, roughness: .5}, o));
+  const at = (k, tmp, F) => typeof k === 'number' ? tmp[k] : F[k];
+  const add = (geo, mat) => { const m = new THREE.Mesh(geo, mat); group.add(m); return m; };
+  const seg = (a, b, r1, r2, mat, n = 14) => { const m = add(new THREE.CylinderGeometry(r2, r1, 1, n), mat);
+    parts.push((tmp, F) => { const A = at(a, tmp, F), B = at(b, tmp, F), d = B.clone().sub(A), L = d.length();
+      m.position.copy(A).addScaledVector(d, .5); m.scale.set(1, Math.max(L, 1e-4), 1); if (L > 1e-6) m.quaternion.setFromUnitVectors(UP, d.divideScalar(L)); }); };
+  const ball = (a, r, mat, n = 16) => { const m = add(new THREE.SphereGeometry(r, n, Math.max(6, n * .7 | 0)), mat); parts.push((tmp, F) => m.position.copy(at(a, tmp, F))); };
+  const caps = (a, b, r1, r2, mat, n) => { seg(a, b, r1, r2, mat, n); ball(a, r1, mat, n); ball(b, r2, mat, n); };
+  // ellipsoid on the spine at t (0 = shoulders, 1 = hips): rx = sx × shoulder (or hip) width, ry = front/back radius, rz = sz × torso length
+  const ell = (t, sx, ry, sz, mat, n = 22) => { const m = add(new THREE.SphereGeometry(1, n, n * .7 | 0), mat);
+    parts.push((tmp, F) => { m.position.copy(F.sh).lerp(F.hp, t[0]); m.quaternion.copy(F.q); m.scale.set(sx * (t[1] === 'hw' ? F.hw : F.sw), ry, sz * F.len); }); };
+  // box spanned by shoulders + hips (shoulders × sw, hips × hw from their middles), ±ht front/back
+  const hull = (ht, sw, hw, mat) => {
+    const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(24), 3));
+    geo.setIndex([0,2,1, 0,3,2, 4,5,6, 4,6,7, 0,1,5, 0,5,4, 3,7,6, 3,6,2, 0,4,7, 0,7,3, 1,2,6, 1,6,5]); mat.side = THREE.DoubleSide; add(geo, mat);
+    parts.push((tmp, F) => { const pa = geo.attributes.position, c = [[F.sh, -F.sw * sw], [F.sh, F.sw * sw], [F.hp, F.hw * hw], [F.hp, -F.hw * hw]].map(([o, w]) => o.clone().addScaledVector(F.x, w / 2));
+      c.forEach((v, n) => { pa.setXYZ(n, v.x + F.y.x * ht, v.y + F.y.y * ht, v.z + F.y.z * ht); pa.setXYZ(n + 4, v.x - F.y.x * ht, v.y - F.y.y * ht, v.z - F.y.z * ht); });
+      pa.needsUpdate = true; geo.computeVertexNormals(); geo.computeBoundingSphere(); }); };
+  const limbs = o => { const mk = o.caps ? caps : seg, n = o.n || 14;
+    for (const [a, b, c] of FIG_ARMS) { mk(a, b, o.ua[0], o.ua[1], o.m, n); mk(b, c, o.fa[0], o.fa[1], o.m, n); if (o.j) [a, b, c].forEach((j, k) => ball(j, o.j[k], o.mj || o.m, n)); }
+    for (const [a, b, c, h, t] of FIG_LEGS) { mk(a, b, o.th[0], o.th[1], o.m, n); mk(b, c, o.sh[0], o.sh[1], o.m, n); if (o.j) [b, c].forEach((j, k) => ball(j, o.j[k + 3], o.mj || o.m, n));
+      if (o.foot) o.foot(h, t); } };
+  if (figStyle === 'capsule') {
+    const m = M({roughness: .35});
+    limbs({m, caps: 1, ua: [.055, .055], fa: [.045, .045], th: [.075, .075], sh: [.058, .058], n: 16, foot: (h, t) => caps(h, t, .035, .03, m, 16)});
+    ell([.5], .55, .12, .62, m); ball('head', .12, m, 20);
+  } else if (figStyle === 'glass') {
+    const bone = M({color: base.clone().multiplyScalar(.35)}), m = M({transparent: true, opacity: .58, depthWrite: false, roughness: .3});   // .32 was too see-through to read the body
+    limbs({m: bone, ua: [.014, .014], fa: [.014, .014], th: [.016, .016], sh: [.016, .016], j: [.03, .026, .022, .03, .026], n: 8, foot: (h, t) => seg(h, t, .014, .014, bone, 8)});
+    seg('sh', 'hp', .016, .016, bone, 8); seg(11, 12, .014, .014, bone, 8); seg(23, 24, .014, .014, bone, 8);
+    limbs({m, caps: 1, ua: [.06, .05], fa: [.05, .04], th: [.085, .065], sh: [.065, .05], n: 16, foot: (h, t) => caps(h, t, .035, .03, m, 16)});
+    ell([.5], .58, .12, .62, m); ball('head', .12, m, 20);
+  } else if (figStyle === 'thin') {
+    const m = M();
+    limbs({m, ua: [.018, .018], fa: [.018, .018], th: [.022, .022], sh: [.022, .022], j: [.04, .035, .03, .04, .035], n: 10, foot: (h, t) => seg(h, t, .018, .018, m, 10)});
+    seg(11, 12, .02, .02, m, 10); seg(23, 24, .02, .02, m, 10); seg('sh', 'hp', .022, .022, m, 10); seg('sh', 'head', .018, .016, m, 10); ball('head', .1, m, 18);
+  } else if (figStyle === 'athlete') {
+    const m = M();
+    limbs({m, ua: [.07, .048], fa: [.048, .032], th: [.09, .06], sh: [.062, .04], j: [.075, .045, .032, .09, .06], n: 14, foot: (h, t) => caps(h, t, .035, .03, m, 14)});
+    hull(.12, 1.3, .8, M()); seg('sh', 'head', .05, .05, m, 14); ball('head', .115, m, 18);
+  } else {                                             // smooth
+    const m = M({roughness: .4});
+    limbs({m, caps: 1, ua: [.07, .05], fa: [.05, .035], th: [.1, .065], sh: [.068, .045], n: 24, foot: (h, t) => caps(h, t, .045, .04, m, 20)});
+    ell([.42], .62, .14, .66, m, 28); ell([.88, 'hw'], .85, .13, .3, m, 24); seg('sh', 'head', .05, .045, m, 20); ball('head', .12, m, 28);
+  }
+  rig.g.add(group); rig.fig = {group, parts, style: figStyle};
+  for (const o of [...rig.bones, ...rig.joints, rig.head, rig.torso, rig.nose]) o.visible = false;   // the old fixed figure: kept only as position holders
+}
+function updateFigure(rig, tmp) {
+  if (!rig.fig || rig.fig.style !== figStyle) buildFigure(rig, rig.col);
+  const F = figFrame(tmp); for (const p of rig.fig.parts) p(tmp, F);
+}
+
 const TRAIL_MAX = 8000, TRAIL_RECENT = 5;
 let rigs = [];
 function makeRig(col) {
@@ -131,7 +202,7 @@ function poseRig(rig, row, rk) {
   const gx = row[0] / 1000, gy = row[1] / 1000;
   S.jidx.forEach((j, n) => tmp[j].set(row[2 + 3 * n] / 1000, row[3 + 3 * n] / 1000, row[4 + 3 * n] / 1000));
   BONES.forEach(([a, b], n) => setBone(rig.bones[n], tmp[a], tmp[b], BONE_R[n]));
-  for (let j = 11; j < 33; j++) { rig.joints[j].visible = true; rig.joints[j].position.copy(tmp[j]); rig.joints[j].scale.setScalar(JOINT_S[j] || 1); }
+  for (let j = 11; j < 33; j++) { rig.joints[j].visible = false; rig.joints[j].position.copy(tmp[j]); rig.joints[j].scale.setScalar(JOINT_S[j] || 1); }
   rig.head.position.copy(tmp[7]).add(tmp[8]).multiplyScalar(.5); rig.head.position.z += 0.02;
   rig.ring.position.set(gx, gy, 0.01); rig.shadow.position.set(gx, gy, 0.005);
   const rx = tmp[12].x - tmp[11].x + tmp[24].x - tmp[23].x, ry = tmp[12].y - tmp[11].y + tmp[24].y - tmp[23].y;
@@ -141,6 +212,7 @@ function poseRig(rig, row, rk) {
   tp.needsUpdate = true; rig.torso.geometry.computeVertexNormals(); rig.torso.geometry.computeBoundingSphere();
   rig.nose.position.set(rig.head.position.x + fx * 0.13, rig.head.position.y + fy * 0.13, rig.head.position.z);
   rig.nose.quaternion.setFromUnitVectors(UP, new THREE.Vector3(fx, fy, 0));
+  updateFigure(rig, tmp);
   rig.racket.visible = !!rk;
   if (rk) { rig.racket.position.set(rk[0] / 1000, rk[1] / 1000, rk[2] / 1000); rig.racket.quaternion.set(rk[3] / 1e4, rk[4] / 1e4, rk[5] / 1e4, rk[6] / 1e4).normalize(); }
 }
@@ -344,6 +416,9 @@ document.querySelectorAll('[data-r]').forEach(b => b.onclick = () => { clock.rat
 $('viewsel').onchange = e => { setView(e.target.value); e.target.blur(); };
 const toggle = (id, get, set) => { $(id).onclick = () => { set(!get()); $(id).classList.toggle('on', get()); lastT = -1; }; };
 toggle('trailbtn', () => showTrail, v => showTrail = v); toggle('ballbtn', () => showBall, v => showBall = v); toggle('racketbtn', () => showRacket, v => showRacket = v);
+{ const setFig = () => { $('figbtn').textContent = '人物：' + FIG_STYLES.find(f => f[0] === figStyle)[1]; };
+  setFig(); $('figbtn').onclick = () => { const k = FIG_STYLES.findIndex(f => f[0] === figStyle); figStyle = FIG_STYLES[(k + 1) % FIG_STYLES.length][0];
+    try { localStorage.setItem('figStyle', figStyle); } catch (e) {} setFig(); lastT = -1; }; }
 $('hitsbtn').onclick = () => { const p = $('hitpanel'), on = p.style.display === 'none'; p.style.display = on ? '' : 'none'; $('hitsbtn').classList.toggle('on', on); lastHit = -2; };
 $('tacbtn').onclick = () => { const p = $('tacpanel'), on = p.style.display === 'none'; p.style.display = on ? '' : 'none'; $('tacbtn').classList.toggle('on', on); };
 $('hpclose').onclick = () => { $('hitpanel').style.display = 'none'; $('hitsbtn').classList.remove('on'); }; $('tacclose').onclick = () => { $('tacpanel').style.display = 'none'; $('tacbtn').classList.remove('on'); };
