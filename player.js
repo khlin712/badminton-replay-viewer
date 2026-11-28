@@ -13,7 +13,7 @@ const mbs = n => (n / 1e6).toFixed(n < 1e7 ? 1 : 0) + ' MB';
 
 /* ---------- state ---------- */
 let S = null, videoFile = null, blobUrl = null, started = false, vidCheck = null;
-let view = 'orbit', showTrail = true, showBall = true, showRacket = false, hasVideo = false;   // racket: an estimate from the forearm, off unless asked for
+let view = 'orbit', showTrail = true, showBall = true, showRacket = false, hasVideo = false, showRoutes = (() => { try { return localStorage.getItem('floorRoutes') === '1'; } catch (e) { return false; } })();   // racket: an estimate from the forearm, off unless asked for
 const vid = $('vid');
 
 /* ---------- three.js scene ---------- */
@@ -75,8 +75,10 @@ function buildCamGizmo(c) {
 const UP = new THREE.Vector3(0, 1, 0);
 function setBone(m, a, b, r) { const d = new THREE.Vector3().subVectors(b, a), len = d.length(); m.position.copy(a).addScaledVector(d, .5); m.scale.set(r, len, r); m.quaternion.setFromUnitVectors(UP, d.normalize()); }
 /* ---------- figure styles: how a player's body is drawn from the file's joint positions (look only) ---------- */
-const FIG_STYLES = [['capsule', '膠囊人'], ['glass', '半透明＋骨架'], ['thin', '細骨架'], ['athlete', '運動員'], ['smooth', '平滑一體']];
-let figStyle = (() => { let v = null; try { v = localStorage.getItem('figStyle'); } catch (e) {} return FIG_STYLES.some(f => f[0] === v) ? v : 'capsule'; })();
+// 2026-11-28 later: the user went back to the original figure (default) and kept only 細骨架 as the other choice. The other
+// looks stay in buildFigure but are not offered.
+const FIG_STYLES = [['classic', '原始樣式'], ['thin', '細骨架']];   // 點雲 was tried and removed (2026-11-28)
+let figStyle = (() => { let v = null; try { v = localStorage.getItem('figStyle'); } catch (e) {} return FIG_STYLES.some(f => f[0] === v) ? v : 'classic'; })();
 const FIG_ARMS = [[11, 13, 15], [12, 14, 16]], FIG_LEGS = [[23, 25, 27, 29, 31], [24, 26, 28, 30, 32]];
 function figFrame(tmp) {                     // torso frame: x = right (left→right shoulder/hip), y = front, z = up the spine
   const sh = tmp[11].clone().add(tmp[12]).multiplyScalar(.5), hp = tmp[23].clone().add(tmp[24]).multiplyScalar(.5);
@@ -90,7 +92,7 @@ function figFrame(tmp) {                     // torso frame: x = right (left→r
   return {sh, hp, x, y, z, q, len, sw: Math.max(tmp[11].distanceTo(tmp[12]), 0.7 * len), hw: Math.max(tmp[23].distanceTo(tmp[24]), 0.36 * len), head};
 }
 function buildFigure(rig, col) {
-  if (rig.fig) { rig.fig.group.traverse(o => { if (o.isMesh) { o.geometry.dispose(); o.material.dispose(); } }); rig.g.remove(rig.fig.group); }
+  if (rig.fig) { rig.fig.group.traverse(o => { if (o.isMesh || o.isPoints) { o.geometry.dispose(); o.material.dispose(); } }); rig.g.remove(rig.fig.group); }
   const group = new THREE.Group(), parts = [], base = new THREE.Color(col);
   const M = (o = {}) => new THREE.MeshStandardMaterial(Object.assign({color: base, roughness: .5}, o));
   const at = (k, tmp, F) => typeof k === 'number' ? tmp[k] : F[k];
@@ -114,37 +116,93 @@ function buildFigure(rig, col) {
     for (const [a, b, c] of FIG_ARMS) { mk(a, b, o.ua[0], o.ua[1], o.m, n); mk(b, c, o.fa[0], o.fa[1], o.m, n); if (o.j) [a, b, c].forEach((j, k) => ball(j, o.j[k], o.mj || o.m, n)); }
     for (const [a, b, c, h, t] of FIG_LEGS) { mk(a, b, o.th[0], o.th[1], o.m, n); mk(b, c, o.sh[0], o.sh[1], o.m, n); if (o.j) [b, c].forEach((j, k) => ball(j, o.j[k + 3], o.mj || o.m, n));
       if (o.foot) o.foot(h, t); } };
-  if (figStyle === 'capsule') {
+  // front / back at a glance: a light face (eyes + nose) on the head and a light chest plate, both on the front side; the back
+  // keeps the plain colour (side-on and from behind the two were impossible to tell apart, so left / right looked swapped)
+  const light = base.clone().lerp(new THREE.Color(0xffffff), 0.6), dark = new THREE.Color(0x222222);
+  const marks = (hr, cd, cw, ch) => {            // head radius, chest depth (front surface from the spine), chest plate width / height × shoulder width / torso
+    const lm = M({color: light, roughness: .45}), em = M({color: dark, roughness: .4});
+    const nose = add(new THREE.ConeGeometry(hr * 0.22, hr * 0.5, 12), lm);
+    const eyes = [-1, 1].map(() => add(new THREE.SphereGeometry(hr * 0.13, 10, 8), em));
+    const plate = add(new THREE.SphereGeometry(1, 20, 12), lm);
+    parts.push((tmp, F) => {
+      nose.position.copy(F.head).addScaledVector(F.y, hr * 1.05); nose.quaternion.setFromUnitVectors(UP, F.y);
+      eyes.forEach((e, n) => e.position.copy(F.head).addScaledVector(F.y, hr * 0.82).addScaledVector(F.x, (n ? 1 : -1) * hr * 0.38).add(new THREE.Vector3(0, 0, hr * 0.25)));
+      plate.position.copy(F.sh).lerp(F.hp, 0.32).addScaledVector(F.y, cd); plate.quaternion.copy(F.q); plate.scale.set(cw * F.sw, 0.012, ch * F.len);
+    }); };
+  if (figStyle === 'classic') {
+    // the original figure: the rig's own cylinders, joint balls, box torso (light chest / dark back) and nose — shown below
+  } else if (figStyle === 'capsule') {
     const m = M({roughness: .35});
     limbs({m, caps: 1, ua: [.055, .055], fa: [.045, .045], th: [.075, .075], sh: [.058, .058], n: 16, foot: (h, t) => caps(h, t, .035, .03, m, 16)});
-    ell([.5], .55, .12, .62, m); ball('head', .12, m, 20);
+    ell([.5], .55, .12, .62, m); ball('head', .12, m, 20); marks(.12, .115, .3, .28);
   } else if (figStyle === 'glass') {
     const bone = M({color: base.clone().multiplyScalar(.35)}), m = M({transparent: true, opacity: .58, depthWrite: false, roughness: .3});   // .32 was too see-through to read the body
     limbs({m: bone, ua: [.014, .014], fa: [.014, .014], th: [.016, .016], sh: [.016, .016], j: [.03, .026, .022, .03, .026], n: 8, foot: (h, t) => seg(h, t, .014, .014, bone, 8)});
     seg('sh', 'hp', .016, .016, bone, 8); seg(11, 12, .014, .014, bone, 8); seg(23, 24, .014, .014, bone, 8);
     limbs({m, caps: 1, ua: [.06, .05], fa: [.05, .04], th: [.085, .065], sh: [.065, .05], n: 16, foot: (h, t) => caps(h, t, .035, .03, m, 16)});
-    ell([.5], .58, .12, .62, m); ball('head', .12, m, 20);
+    ell([.5], .58, .12, .62, m); ball('head', .12, m, 20); marks(.12, .115, .3, .28);
   } else if (figStyle === 'thin') {
     const m = M();
     limbs({m, ua: [.018, .018], fa: [.018, .018], th: [.022, .022], sh: [.022, .022], j: [.04, .035, .03, .04, .035], n: 10, foot: (h, t) => seg(h, t, .018, .018, m, 10)});
-    seg(11, 12, .02, .02, m, 10); seg(23, 24, .02, .02, m, 10); seg('sh', 'hp', .022, .022, m, 10); seg('sh', 'head', .018, .016, m, 10); ball('head', .1, m, 18);
+    seg(11, 12, .02, .02, m, 10); seg(23, 24, .02, .02, m, 10); seg('sh', 'hp', .022, .022, m, 10); seg('sh', 'head', .018, .016, m, 10); ball('head', .1, m, 18); marks(.1, .03, .25, .22);
+  } else if (figStyle === 'points') {
+    // 點雲人形: ~2300 points fixed relative to the limbs / torso / head, moved with them every frame; white points mark the
+    // front (nose and chest)
+    const L = [], rnd = r => { let x, y, z; do { x = Math.random() * 2 - 1; y = Math.random() * 2 - 1; z = Math.random() * 2 - 1; } while (x * x + y * y + z * z > 1); return [x * r, y * r, z * r]; };
+    const sg = (a, b, r, n) => { for (let k = 0; k < n; k++) L.push([0, a, b, Math.random(), ...rnd(r)]); };
+    for (const [a, b, c] of FIG_ARMS) { sg(a, b, .05, 160); sg(b, c, .04, 130); }
+    for (const [a, b, c, h, t] of FIG_LEGS) { sg(a, b, .075, 220); sg(b, c, .055, 180); sg(h, t, .035, 60); }
+    for (let k = 0; k < 700; k++) L.push([1, 0, 0, 0, ...rnd(1)]);
+    sg('head', 'head', .12, 300);
+    const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(L.length * 3), 3));
+    group.add(new THREE.Points(geo, new THREE.PointsMaterial({color: base, size: .02})));
+    const fgeo = new THREE.BufferGeometry(); fgeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
+    group.add(new THREE.Points(fgeo, new THREE.PointsMaterial({color: 0xffffff, size: .06})));
+    parts.push((tmp, F) => {
+      const pa = geo.attributes.position, cx = (F.sh.x + F.hp.x) / 2, cy = (F.sh.y + F.hp.y) / 2, cz = (F.sh.z + F.hp.z) / 2;
+      L.forEach((p, n) => {
+        if (p[0]) { const u = p[4] * F.sw * .55, v = p[5] * .12, w = p[6] * F.len * .6;
+          pa.setXYZ(n, cx + F.x.x * u + F.y.x * v + F.z.x * w, cy + F.x.y * u + F.y.y * v + F.z.y * w, cz + F.x.z * u + F.y.z * v + F.z.z * w); return; }
+        const A = at(p[1], tmp, F), B = at(p[2], tmp, F), t = p[3];
+        pa.setXYZ(n, A.x + (B.x - A.x) * t + p[4], A.y + (B.y - A.y) * t + p[5], A.z + (B.z - A.z) * t + p[6]);
+      });
+      pa.needsUpdate = true; geo.computeBoundingSphere();
+      const fa = fgeo.attributes.position;
+      fa.setXYZ(0, F.head.x + F.y.x * .13, F.head.y + F.y.y * .13, F.head.z + F.y.z * .13);
+      fa.setXYZ(1, cx + F.y.x * .14 + F.z.x * F.len * .2, cy + F.y.y * .14 + F.z.y * F.len * .2, cz + F.y.z * .14 + F.z.z * F.len * .2);
+      fa.needsUpdate = true; fgeo.computeBoundingSphere();
+    });
   } else if (figStyle === 'athlete') {
     const m = M();
     limbs({m, ua: [.07, .048], fa: [.048, .032], th: [.09, .06], sh: [.062, .04], j: [.075, .045, .032, .09, .06], n: 14, foot: (h, t) => caps(h, t, .035, .03, m, 14)});
-    hull(.12, 1.3, .8, M()); seg('sh', 'head', .05, .05, m, 14); ball('head', .115, m, 18);
+    hull(.12, 1.3, .8, M()); seg('sh', 'head', .05, .05, m, 14); ball('head', .115, m, 18); marks(.115, .125, .32, .3);
   } else {                                             // smooth
     const m = M({roughness: .4});
     limbs({m, caps: 1, ua: [.07, .05], fa: [.05, .035], th: [.1, .065], sh: [.068, .045], n: 24, foot: (h, t) => caps(h, t, .045, .04, m, 20)});
-    ell([.42], .62, .14, .66, m, 28); ell([.88, 'hw'], .85, .13, .3, m, 24); seg('sh', 'head', .05, .045, m, 20); ball('head', .12, m, 28);
+    ell([.42], .62, .14, .66, m, 28); ell([.88, 'hw'], .85, .13, .3, m, 24); seg('sh', 'head', .05, .045, m, 20); ball('head', .12, m, 28); marks(.12, .135, .32, .3);
   }
   rig.g.add(group); rig.fig = {group, parts, style: figStyle};
-  for (const o of [...rig.bones, ...rig.joints, rig.head, rig.torso, rig.nose]) o.visible = false;   // the old fixed figure: kept only as position holders
+  const cl = figStyle === 'classic';
+  for (const o of [...rig.bones, rig.head, rig.torso, rig.nose]) o.visible = cl;   // the original figure (else only position holders)
+  rig.joints.forEach((o, j) => o.visible = cl && j >= 11);
 }
 function updateFigure(rig, tmp) {
   if (!rig.fig || rig.fig.style !== figStyle) buildFigure(rig, rig.col);
   const F = figFrame(tmp); for (const p of rig.fig.parts) p(tmp, F);
 }
 
+// ground trails as flat ribbons on the floor (WebGL lines are always 1 px thin): each segment of point pairs (2k, 2k+1)
+// becomes a quad TRAIL_W × 2 wide, colour and fade per end
+const TRAIL_W = 0.035, TRAIL_P = new Float32Array(16000 * 2), TRAIL_A = new Float32Array(16000);
+function writeRibbon(geo, m, c) {
+  const pos = geo.attributes.position, col = geo.attributes.color, P = TRAIL_P, A = TRAIL_A; let v = 0;
+  for (let s = 0; s + 1 < m; s += 2) {
+    const x0 = P[2 * s], y0 = P[2 * s + 1], x1 = P[2 * s + 2], y1 = P[2 * s + 3], L = Math.hypot(x1 - x0, y1 - y0); if (L < 1e-6) continue;
+    const nx = -(y1 - y0) / L * TRAIL_W, ny = (x1 - x0) / L * TRAIL_W, q = [[x0 + nx, y0 + ny, A[s]], [x0 - nx, y0 - ny, A[s]], [x1 + nx, y1 + ny, A[s + 1]], [x1 - nx, y1 - ny, A[s + 1]]];
+    for (const k of [0, 1, 2, 2, 1, 3]) { pos.setXYZ(v, q[k][0], q[k][1], 0.02); col.setXYZW(v, c.r, c.g, c.b, q[k][2]); v++; }
+  }
+  geo.setDrawRange(0, v); pos.needsUpdate = col.needsUpdate = true;
+}
 const TRAIL_MAX = 8000, TRAIL_RECENT = 5;
 let rigs = [];
 function makeRig(col) {
@@ -163,9 +221,9 @@ function makeRig(col) {
   const tri = new THREE.Shape(); tri.moveTo(0.62, 0); tri.lineTo(0.38, 0.16); tri.lineTo(0.38, -0.16); tri.lineTo(0.62, 0);
   const facing = new THREE.Mesh(new THREE.ShapeGeometry(tri), new THREE.MeshBasicMaterial({color: col, side: THREE.DoubleSide})); facing.position.z = 0.012; g.add(facing);
   const trg = new THREE.BufferGeometry();
-  trg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(16000 * 3), 3).setUsage(THREE.DynamicDrawUsage));
-  trg.setAttribute('color', new THREE.BufferAttribute(new Float32Array(16000 * 4), 4).setUsage(THREE.DynamicDrawUsage)); trg.setDrawRange(0, 0);
-  const trail = new THREE.LineSegments(trg, new THREE.LineBasicMaterial({vertexColors: true, transparent: true, depthWrite: false})); trail.frustumCulled = false; scene.add(trail);
+  trg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(24000 * 3), 3).setUsage(THREE.DynamicDrawUsage));
+  trg.setAttribute('color', new THREE.BufferAttribute(new Float32Array(24000 * 4), 4).setUsage(THREE.DynamicDrawUsage)); trg.setDrawRange(0, 0);
+  const trail = new THREE.Mesh(trg, new THREE.MeshBasicMaterial({vertexColors: true, transparent: true, depthWrite: false, side: THREE.DoubleSide})); trail.frustumCulled = false; scene.add(trail);
   const rk = new THREE.Group(), rmat = new THREE.MeshStandardMaterial({color: 0xe8e8e8, roughness: .4});
   const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.007, 0.007, 0.32, 6), rmat); shaft.position.y = 0.24; rk.add(shaft);
   const rhead = new THREE.Mesh(new THREE.TorusGeometry(1, 0.06, 6, 28), rmat); rhead.scale.set(0.1, 0.125, 0.1); rhead.position.y = 0.525; rk.add(rhead);
@@ -202,7 +260,7 @@ function poseRig(rig, row, rk) {
   const gx = row[0] / 1000, gy = row[1] / 1000;
   S.jidx.forEach((j, n) => tmp[j].set(row[2 + 3 * n] / 1000, row[3 + 3 * n] / 1000, row[4 + 3 * n] / 1000));
   BONES.forEach(([a, b], n) => setBone(rig.bones[n], tmp[a], tmp[b], BONE_R[n]));
-  for (let j = 11; j < 33; j++) { rig.joints[j].visible = false; rig.joints[j].position.copy(tmp[j]); rig.joints[j].scale.setScalar(JOINT_S[j] || 1); }
+  for (let j = 11; j < 33; j++) { rig.joints[j].visible = figStyle === 'classic'; rig.joints[j].position.copy(tmp[j]); rig.joints[j].scale.setScalar(JOINT_S[j] || 1); }
   rig.head.position.copy(tmp[7]).add(tmp[8]).multiplyScalar(.5); rig.head.position.z += 0.02;
   rig.ring.position.set(gx, gy, 0.01); rig.shadow.position.set(gx, gy, 0.005);
   const rx = tmp[12].x - tmp[11].x + tmp[24].x - tmp[23].x, ry = tmp[12].y - tmp[11].y + tmp[24].y - tmp[23].y;
@@ -225,12 +283,37 @@ function updateTrails(k0, T) {
       const row = f[n]; if (!row) { prev = null; continue; }
       const x = row[0] / 1000, y = row[1] / 1000;
       if (prev && t[n] - prev.t < 0.6 && t[n] >= T - TRAIL_RECENT) for (const [X, Y, tt] of [[prev.x, prev.y, prev.t], [x, y, t[n]]]) {
-        pos.setXYZ(m, X, Y, 0.02); col.setXYZW(m, c.r, c.g, c.b, Math.max(0, 1 - (T - tt) / TRAIL_RECENT) ** 0.7); m++;
+        TRAIL_P[2 * m] = X; TRAIL_P[2 * m + 1] = Y; TRAIL_A[m] = Math.max(0, 1 - (T - tt) / TRAIL_RECENT) ** 0.7; m++;
       }
       prev = {x, y, t: t[n]};
     }
-    tr.geometry.setDrawRange(0, m); pos.needsUpdate = col.needsUpdate = true;
+    writeRibbon(tr.geometry, m, c);
   });
+}
+// 場上球路 (optional): the shots of the last 5 s drawn on the court floor — a strip from the hitter's spot to where the shot went
+// with an arrow head (hitter's colour, fading with age), yellow ✕ = landing. From the file's routes (older files have none).
+const frGeo = new THREE.BufferGeometry();
+frGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6000 * 3), 3).setUsage(THREE.DynamicDrawUsage));
+frGeo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(6000 * 4), 4).setUsage(THREE.DynamicDrawUsage)); frGeo.setDrawRange(0, 0);
+const floorRoutes = new THREE.Mesh(frGeo, new THREE.MeshBasicMaterial({vertexColors: true, transparent: true, depthWrite: false, side: THREE.DoubleSide}));
+floorRoutes.frustumCulled = false; floorRoutes.visible = false; scene.add(floorRoutes);
+function updateFloorRoutes(T) {
+  const R = S.routes || []; floorRoutes.visible = showRoutes && R.length > 0; if (!floorRoutes.visible) return;
+  const pos = frGeo.attributes.position, col = frGeo.attributes.color, Z = 0.025; let v = 0;
+  const tri = (a, b, c, cl, al) => { if (v + 3 > 6000) return; for (const p of [a, b, c]) { pos.setXYZ(v, p[0], p[1], Z); col.setXYZW(v, cl.r, cl.g, cl.b, al); v++; } };
+  const strip = (x0, y0, x1, y1, w, cl, al) => { const L = Math.hypot(x1 - x0, y1 - y0); if (L < 1e-6) return; const nx = -(y1 - y0) / L * w, ny = (x1 - x0) / L * w;
+    tri([x0 + nx, y0 + ny], [x0 - nx, y0 - ny], [x1 + nx, y1 + ny], cl, al); tri([x1 + nx, y1 + ny], [x0 - nx, y0 - ny], [x1 - nx, y1 - ny], cl, al); };
+  const yel = new THREE.Color(0xe8ff4a);
+  for (const r of R) {
+    const age = T - r.t; if (age < 0 || age > 5) continue;
+    const sl = S.slots[r.slot]; if (!sl) continue;
+    const al = Math.max(0.2, 1 - age / 5), c = new THREE.Color(sl.col), [x0, y0] = r.s, [x1, y1] = r.e, L = Math.hypot(x1 - x0, y1 - y0); if (L < 0.2) continue;
+    const ux = (x1 - x0) / L, uy = (y1 - y0) / L, AH = 0.25, AW = 0.1;
+    strip(x0, y0, x1 - ux * AH * 0.8, y1 - uy * AH * 0.8, TRAIL_W / 2, c, al);   // half the footwork trail's width, so the two stay apart
+    tri([x1, y1], [x1 - ux * AH - uy * AW, y1 - uy * AH + ux * AW], [x1 - ux * AH + uy * AW, y1 - uy * AH - ux * AW], c, al);
+    if (r.land) { strip(x1 - 0.15, y1 - 0.15, x1 + 0.15, y1 + 0.15, TRAIL_W / 2, yel, al); strip(x1 - 0.15, y1 + 0.15, x1 + 0.15, y1 - 0.15, TRAIL_W / 2, yel, al); }
+  }
+  frGeo.setDrawRange(0, v); pos.needsUpdate = col.needsUpdate = true;
 }
 function updateBall(T) {
   ball.visible = ballShadow.visible = ballTrail.visible = landMark.visible = false;
@@ -250,7 +333,7 @@ function updateBall(T) {
 function drawAt(T) {
   const t = S.frames.t, k0 = Math.max(0, bsearch(t, T));
   S.slots.forEach((s, i) => { if (!s.on) { rigs[i].g.visible = false; return; } const [row, rk] = slotAt(S.frames.slots[i], k0, T); poseRig(rigs[i], row, rk); });
-  updateTrails(k0, T); updateBall(T);
+  updateTrails(k0, T); updateBall(T); updateFloorRoutes(T);
   const h = S.hits.findIndex((x, i) => x.t <= T + 0.02 && (i === S.hits.length - 1 || S.hits[i + 1].t > T + 0.02));
   if (h !== lastHit) { lastHit = h; document.querySelectorAll('#hittbl tr.cur').forEach(r => r.classList.remove('cur')); const r = document.querySelector(`#hittbl tr[data-i="${h}"]`); if (r) { r.classList.add('cur'); if ($('hitpanel').style.display !== 'none') r.scrollIntoView({block: 'nearest'}); } }
 }
@@ -416,6 +499,7 @@ document.querySelectorAll('[data-r]').forEach(b => b.onclick = () => { clock.rat
 $('viewsel').onchange = e => { setView(e.target.value); e.target.blur(); };
 const toggle = (id, get, set) => { $(id).onclick = () => { set(!get()); $(id).classList.toggle('on', get()); lastT = -1; }; };
 toggle('trailbtn', () => showTrail, v => showTrail = v); toggle('ballbtn', () => showBall, v => showBall = v); toggle('racketbtn', () => showRacket, v => showRacket = v);
+toggle('routebtn', () => showRoutes, v => { showRoutes = v; try { localStorage.setItem('floorRoutes', v ? '1' : '0'); } catch (e) {} }); $('routebtn').classList.toggle('on', showRoutes);
 { const setFig = () => { $('figbtn').textContent = '人物：' + FIG_STYLES.find(f => f[0] === figStyle)[1]; };
   setFig(); $('figbtn').onclick = () => { const k = FIG_STYLES.findIndex(f => f[0] === figStyle); figStyle = FIG_STYLES[(k + 1) % FIG_STYLES.length][0];
     try { localStorage.setItem('figStyle', figStyle); } catch (e) {} setFig(); lastT = -1; }; }
